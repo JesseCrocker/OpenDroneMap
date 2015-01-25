@@ -7,9 +7,16 @@ import os
 import exifread
 import re
 
+class Image(object):
+    def __init__(self, path):
+        super(Image, self).__init__()
+        self.path = path
+
+
 def proccess_directory(path, options):
     logging.info("Proccessing directory: " + path)
     images = load_image_list(path, options)
+
 
 def load_image_list(path, options):
     ccd_defs_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'ccd_defs.json')
@@ -18,15 +25,62 @@ def load_image_list(path, options):
         ccd_defs = json.load(f)
 
     logging.info("Source files:")
-    for image_path in os.listdir(path):
-        name, ext = os.path.splitext(image_path)
+    images = []
+    for image_name in os.listdir(path):
+        name, ext = os.path.splitext(image_name)
         if ext.lower() in ['.jpg', '.jpeg']:
-            logging.debug(image_path)
-            image_path = os.path.join(path, image_path)
-            with open(image_path, 'rb') as fp:
-                tags = exifread.process_file(fp, details=False)
-            #logging.debug(tags)
-            
+            image_path = os.path.join(path, image_name)
+            try:
+                with open(image_path, 'rb') as fp:
+                    tags = exifread.process_file(fp, details=False)
+                #logging.debug(tags)
+#                print tags
+
+                image = Image(image_path)
+                if 'Image GPSInfo' in tags:
+                    #todo: extract gps
+                    pass
+                else:
+                    logging.warning('Image does not have GPS tags')
+
+                if 'force-ccd' in options:
+                    image.ccd = options.force-ccd
+                elif 'EXIF CCD Width' in tags:
+                    image.ccd = float(str(tags['EXIF CCD Width']))
+                elif 'Image Model' in tags:
+                    camera = str(tags['Image Make']) + " " + str(tags['Image Model'])
+                    if camera in ccd_defs:
+                        image.ccd = ccd_defs[camera]
+                    else:
+                        raise Exception("CCD size for %s not in ccd_defs.json" % (camera))
+                else:
+                    raise Exception("Could not find ccd size")
+
+                if 'force-focal' in options:
+                    image.focal = options.force-focal
+                elif 'EXIF FocalLength' in tags:
+                    image.focal = float(str(tags['EXIF FocalLength']))
+                else:
+                    raise Exception("Focal length not found")
+                    
+                if 'Image XResolution' in tags and 'Image YResolution' in tags:
+                    image.resolution = (int(str(tags['Image XResolution'])), \
+                        int(str(tags['Image YResolution'])))
+                else:
+                    pass
+                    #todo open file and get resolution
+
+                logging.info("using %s\tdimensions %ix%i / focal: %.1f mm / ccd: %.1fmm" % (image_name,\
+                    image.resolution[0], image.resolution[1], image.ccd, image.focal))
+                images.append(image)
+            except Exception, e:
+                logging.error("Error reading image " + image_path)
+                logging.error(e)
+
+    logging.info("loaded %i images", len(images))
+    return images
+
+
 def _main():
     action_choices = ['resize', 'getKeypoints', 'match', 'bundler', 'cmvs', 'pmvs',\
          'odm_meshing', 'odm_texturing', 'odm_georeferencing', 'odm_orthophoto']
