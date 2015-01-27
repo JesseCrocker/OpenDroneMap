@@ -2,15 +2,16 @@
 
 import argparse
 import copy
+from datetime import datetime
 import exifread
 import json
 import logging
+from multiprocessing.pool import ThreadPool
 import os
 import re
+import shutil
 import subprocess
 import sys
-from datetime import datetime
-import shutil
 
 class Image(object):
     def __init__(self, path, ccd=None, focal=None, resolution=(None, None)):
@@ -19,6 +20,9 @@ class Image(object):
         self.ccd = ccd
         self.focal = focal
         self.resolution = resolution
+        self.working_path = None
+        file_path, file_name = os.path.split(path)
+        self.file_name = file_name
 
     def max_dimension(self):
         return max(self.resolution[0], self.resolution[1])
@@ -26,10 +30,8 @@ class Image(object):
 
 def proccess_directory(path, options):
     logging.info("Proccessing directory: " + path)
-
-    jobdir = os.path.join(path, "reconstruction-with-image-size-%i" % options['resize'])
-    if not os.path.exists(jobdir):
-        os.mkdir(jobdir)
+    steps_to_run = options['steps_to_run']
+    logging.debug("Planning to run steps " + ", ".join(steps_to_run))
 
     images = load_image_list(path, options)
     if len(images) == 0:
@@ -44,8 +46,9 @@ def proccess_directory(path, options):
         min_height = min(x[1], min_height)
         max_height = max(x[1], max_height)
 
-    if options['resize'] != 'orig':
-        images = resize_images(options['resize'], jobdir, options, images)
+    for step in steps_to_run:
+        step_function = step_functions[step]
+        step_function(options, images)
 
 
 def load_image_list(path, options):
@@ -92,6 +95,7 @@ def load_image_list(path, options):
                 else:
                     raise Exception("Focal length not found")
 
+                #this seems to frequently be wrong
                 if 'Image XResolution' in tags and 'Image YResolution' in tags:
                     image.resolution = (int(str(tags['Image XResolution'])), \
                         int(str(tags['Image YResolution'])))
@@ -109,42 +113,103 @@ def load_image_list(path, options):
     logging.info("loaded %i images", len(images))
     return images
 
+# Steps 
+def resize_images(options, images):
+    logging.info(' - running resize - ')
 
-def resize_images(max_dimension, jobdir, options, images):
-    logging.info("Resize images to max dimension %d" % max_dimension)
+    work_dir = options['work_dir']
+    max_dimension = options['resize']
+    logging.debug("Resize images to max dimension %d" % max_dimension)
 
-    resized_images = []
+    jobs = []
     for image in images:
-        image_dir, name = os.path.split(image.path)
+        jobs.append((image, work_dir, max_dimension))
 
-        resized_image = copy.copy(image)
-        resized_image.path = os.path.join(jobdir, name)
+    pool = ThreadPool(processes=options['thread_count'])
+    pool.map(_resize_image, jobs)
+    
+    logging.info(' - finished resize - ')
 
-        if image.max_dimension() < max_dimension:
-            logging.debug("Not resizing image %s" % name)
-            shutil.copy(image.path, resized_image.path)
-            resized_images.append(image)
-        else:
-            run('convert -resize %ix%i -quality 100 %s %s' % \
-                (max_dimension, max_dimension, image.path, resized_image.path))
+
+def _resize_image(args):
+    image, jobdir, max_dimension = args
+
+    image_dir, name = os.path.split(image.path)
+
+    image.working_path = os.path.join(jobdir, name)
+
+    if max_dimension == 'orig' or image.max_dimension() < max_dimension:
+        logging.debug("Not resizing image %s" % name)
+        shutil.copy(image.path, image.working_path)
+    else:
+        run('convert -resize %ix%i -quality 100 %s %s' % \
+            (max_dimension, max_dimension, image.path, image.working_path))
         
-            with open(resized_image.path, 'rb') as fp:
-                tags = exifread.process_file(fp, details=False)
+        with open(image.working_path, 'rb') as fp:
+            tags = exifread.process_file(fp, details=False)
 
-            if 'Image XResolution' in tags and 'Image YResolution' in tags:
-                resized_image.resolution = (int(str(tags['Image XResolution'])), \
-                    int(str(tags['Image YResolution'])))
-            else:
-                resized_image.resolution = (None, None)
-                logging.error("Error getting size for resized image")
+        #this seems to frequently be wrong
+        if 'Image XResolution' in tags and 'Image YResolution' in tags:
+            image.resolution = (int(str(tags['Image XResolution'])), \
+                int(str(tags['Image YResolution'])))
+        else:
+            image.resolution = (None, None)
+            logging.error("Error getting size for resized image")
 
-            logging.info("Resize %s\tto%s\t(%i x %i)" % \
-                (name, resized_image.path, resized_image.resolution[0], resized_image.resolution[1]))
-        resized_images.append(resized_image)
-
-    return resized_images
+        logging.info("Resize %s\tto %s\t(%i x %i)" % \
+            (name, image.working_path, image.resolution[0], image.resolution[1]))
 
 
+def get_keypoints(options, images):
+    logging.info(' - finding keypoints - ')
+
+
+def match(options, images):
+    logging.info(' - matching keypoints - ')
+
+
+def bundler(options, images):
+    logging.info(' - running bundler - ')
+
+
+def cmvs(options, images):
+    logging.info(' - running cmvs - ')
+
+
+def pmvs(options, images):
+    logging.info(' - running pmvs - ')
+
+
+def odm_meshing(options, images):
+    logging.info(' - running odm_meshing - ')
+
+
+def odm_texturing(options, images):
+    logging.info(' - running odm_texturing - ')
+
+
+def odm_georeferencing(options, images):
+    logging.info(' - running odm_georeferencing - ')
+
+
+def odm_orthophoto(options, images):
+    logging.info(' - runnng odm_orthophoto - ')
+
+
+step_functions = {
+    "resize" : resize_images,
+    "getKeypoints": get_keypoints,
+    "match": match,
+    "bundler": bundler,
+    "cmvs": cmvs,
+    "pmvs": pmvs,
+    "odm_meshing": odm_meshing,
+    "odm_texturing": odm_texturing,
+    "odm_georeferencing": odm_georeferencing,
+    "odm_orthophoto": odm_orthophoto
+}
+
+# Util
 def run(command):
     logging.debug(command)
     try:
@@ -156,6 +221,24 @@ def run(command):
         return False
     else:
         return True
+
+
+def default_thread_count():
+    #linux
+    if os.path.exists('/sys/devices/system/cpu/'):
+        dir_entries = os.path.listdir('/sys/devices/system/cpu/')
+        if len(dir_entries) > 0:
+            return len(dir_entries)
+
+    #OS X/BSD
+    try:
+        output = subprocess.check_call(['sysctl', '-n', 'hw.ncpu'])
+        logging.debug(output)
+    except subprocess.CalledProcessError, e:
+        pass
+
+    return 2
+
 
 #arg parser validators
 def positive_or_orig(value):
@@ -194,15 +277,26 @@ def float_greater_than_one(value):
         raise argparse.ArgumentTypeError("%s is an invalid value, valid values are >= 1" % value)
     return fvalue
 
+def existing_directory(value):
+    if not os.path.exists(value):
+        raise argparse.ArgumentTypeError("%s is an does not exists" % value)
+    if not os.path.isdir(value):
+        raise argparse.ArgumentTypeError("%s is not a directory" % value)
+    return value
+
+
+#
 
 def _main():
-    action_choices = ['resize', 'getKeypoints', 'match', 'bundler', 'cmvs', 'pmvs',\
+    all_steps = ['resize', 'getKeypoints', 'match', 'bundler', 'cmvs', 'pmvs',\
          'odm_meshing', 'odm_texturing', 'odm_georeferencing', 'odm_orthophoto']
 
     parser = argparse.ArgumentParser(description='...',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('-v', '--verbose', action='store_true')
     parser.add_argument('-q', '--quiet', action='store_true')
+    parser.add_argument('-j', '--jobs', type=positive_int, dest='thread_count')
+
     parser.add_argument('--match-size', default=200, type=int)
     parser.add_argument('--resize-to', default=1200, type=positive_or_orig,
         dest='resize',
@@ -213,11 +307,13 @@ smaller or equal to the specified number if "--resize-to orig" is used it
 will use the images without resizing
         ''')
     
-    parser.add_argument('--start-with', default='resize', choices=action_choices,
+    parser.add_argument('--start-with', default='resize', choices=all_steps,
+        dest='start_with',
         help='will start the sript at the specified step')
-    parser.add_argument('--ends-with', default='odm_texturing', choices=action_choices,
+    parser.add_argument('--end-with', default='odm_texturing', choices=all_steps,
+        dest='end_with',
         help='will stop the sript after the specified step')
-    parser.add_argument('--run-only', choices=action_choices,
+    parser.add_argument('--run-only', choices=all_steps, dest='run_only',
         help='''
 will only execute the specified step. equal to --start-with <step> --end-with <step>
         ''')
@@ -277,21 +373,68 @@ Number of points per octree node, recommended value: 1.0
         metavar='<positive float>',
         help='override the ccd width information for the images')
 
-    parser.add_argument('directory', nargs='*', default=[os.getcwd(),])
+    parser.add_argument('--work-dir', dest='work_dir',
+        help='''
+Directory to store working files in. Defaults to source/reconstruction-with-image-size-<resize>
+        ''')
+
+    parser.add_argument('--results-dir', dest='results_dir',
+        help='''
+Directory to store results in. Defaults to source/reconstruction-with-image-size-<resize>-results
+        ''')
+
+    parser.add_argument('directory', nargs='*', default=[os.getcwd(),], 
+        type=existing_directory)
 
     args = parser.parse_args()
 
     logging.basicConfig(format='%(asctime)-15s %(message)s',
         level=logging.DEBUG if args.verbose else
         (logging.ERROR if args.quiet else logging.INFO))
+
+    if args.thread_count is None:
+        args.thread_count = default_thread_count()
+    args_dict = vars(args)
+
+    steps_to_run = []
+    if 'run_only' in args_dict and args_dict['run_only'] is not None:
+        steps_to_run = [args_dict['run_only'],]
+    else:
+        if 'start_with' in args_dict and 'ends_with' in args_dict:
+            copy_steps = False
+            for step in all_steps:
+                if 'start_with' in args_dict and step == args_dict['start_with']:
+                    copy_steps = True
+                if copy_steps:
+                    steps_to_run.append(step)
+                if 'end_with' in args_dict and step == args_dict['end_with']:
+                    break
+        else:
+            steps_to_run = all_steps
+
+    args_dict['steps_to_run'] = steps_to_run
+
     logging.debug("configuration:")
-    logging.debug(json.dumps(vars(args), sort_keys=True, indent=4, separators=(',', ': ')))
+    logging.debug(json.dumps(args_dict, sort_keys=True, indent=4, separators=(',', ': ')))
+
+    set_work_dir = args_dict['work_dir'] is None
+    set_results_dir = args_dict['results_dir'] is None
 
     for path in args.directory:
-        if os.path.exists(path):
-            proccess_directory(path, vars(args))
-        else:
-            logging.error("Path %s does not exist" % path)
+        if set_work_dir:
+            args_dict['work_dir'] = os.path.join(path, "reconstruction-with-image-size-%i" % \
+                args_dict['resize'])
+        if not os.path.exists(args_dict['work_dir']):
+            os.mkdir(args_dict['work_dir'])
+
+        if set_results_dir:
+            args_dict['results_dir'] = os.path.join(path, "reconstruction-with-image-size-%i-results" % \
+                args_dict['resize'])
+        if not os.path.exists(args_dict['results_dir']):
+            os.mkdir(args_dict['results_dir'])
+
+        proccess_directory(path, args_dict)
+
 
 if __name__ == "__main__":
     _main()
