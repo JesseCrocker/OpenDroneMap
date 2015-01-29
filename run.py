@@ -28,12 +28,38 @@ class Image(object):
         return max(self.resolution[0], self.resolution[1])
 
 
+class StepResult(object):
+    def __init__(self, name=None):
+        super(StepResult, self).__init__()
+        self.start_time = datetime.now()
+        self.end_time = None
+        self.name = name
+
+
+    def end(self, success=False, logs=None):
+        self.end_time = datetime.now()
+        self.success = success
+        self.logs = logs
+
+    def duration(self):
+        return self.end_time - self.start_time
+
+    def __str__(self):
+        return "%s in %s success:%s" %(self.name, self.duration(), self.success)
+
+
 def proccess_directory(path, options):
     logging.info("Proccessing directory: " + path)
     steps_to_run = options['steps_to_run']
     logging.debug("Planning to run steps " + ", ".join(steps_to_run))
 
+    step_results = []
+
+    result = StepResult(name="load_image_list")
     images = load_image_list(path, options)
+    result.end(len(images) > 0)
+    logging.info(result)
+    step_results.append(result)
     if len(images) == 0:
         logging.info("Found no usable images - Quiting")
         return
@@ -47,8 +73,15 @@ def proccess_directory(path, options):
         max_height = max(x[1], max_height)
 
     for step in steps_to_run:
+        result = StepResult(name=step)
         step_function = step_functions[step]
-        step_function(options, images)
+        success, logs = step_function(options, images)
+        result.end(success=success, logs=logs)
+        step_results.append(result)
+        logging.info(result)
+        if not success:
+            logging.error("Step %s failed, stopping" % step)
+            break
 
 
 def load_image_list(path, options):
@@ -126,9 +159,12 @@ def resize_images(options, images):
         jobs.append((image, work_dir, max_dimension))
 
     pool = ThreadPool(processes=options['thread_count'])
-    pool.map(_resize_image, jobs)
-    
-    logging.info(' - finished resize - ')
+    try:
+        pool.map(_resize_image, jobs)
+    except:
+        return False, None
+    else:
+        return True, None
 
 
 def _resize_image(args):
@@ -162,38 +198,46 @@ def _resize_image(args):
 
 def get_keypoints(options, images):
     logging.info(' - finding keypoints - ')
-
+    return True, None
 
 def match(options, images):
     logging.info(' - matching keypoints - ')
+    return True, None
 
 
 def bundler(options, images):
     logging.info(' - running bundler - ')
+    return True, None
 
 
 def cmvs(options, images):
     logging.info(' - running cmvs - ')
+    return True, None
 
 
 def pmvs(options, images):
     logging.info(' - running pmvs - ')
+    return True, None
 
 
 def odm_meshing(options, images):
     logging.info(' - running odm_meshing - ')
+    return True, None
 
 
 def odm_texturing(options, images):
     logging.info(' - running odm_texturing - ')
+    return True, None
 
 
 def odm_georeferencing(options, images):
     logging.info(' - running odm_georeferencing - ')
+    return True, None
 
 
 def odm_orthophoto(options, images):
     logging.info(' - runnng odm_orthophoto - ')
+    return True, None
 
 
 step_functions = {
@@ -208,6 +252,7 @@ step_functions = {
     "odm_georeferencing": odm_georeferencing,
     "odm_orthophoto": odm_orthophoto
 }
+
 
 # Util
 def run(command):
@@ -279,7 +324,7 @@ def float_greater_than_one(value):
 
 def existing_directory(value):
     if not os.path.exists(value):
-        raise argparse.ArgumentTypeError("%s is an does not exists" % value)
+        raise argparse.ArgumentTypeError("%s does not exists" % value)
     if not os.path.isdir(value):
         raise argparse.ArgumentTypeError("%s is not a directory" % value)
     return value
@@ -383,6 +428,12 @@ Directory to store working files in. Defaults to source/reconstruction-with-imag
 Directory to store results in. Defaults to source/reconstruction-with-image-size-<resize>-results
         ''')
 
+    parser.add_argument('--bin-dir', dest='bin_dir', type=existing_directory,
+        help='''
+Directory where ODM binaries are located.
+        ''', 
+        default=os.path.join(os.path.dirname(os.path.realpath(__file__)), 'bin') )
+    
     parser.add_argument('directory', nargs='*', default=[os.getcwd(),], 
         type=existing_directory)
 
